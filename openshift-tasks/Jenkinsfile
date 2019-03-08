@@ -86,6 +86,8 @@ podTemplate(
         echo "Publish to Nexus"
 
         // TBD: Publish to Nexus
+        echo "Publish to Nexus"
+        sh "${mvnCmd} deploy -DskipTests=true -DaltDeploymentRepository=nexus::default::http://nexus3.gpte-hw-cicd.svc.cluster.local:8081/repository/releases"
       }
 
       // Build the OpenShift Image in OpenShift and tag it.
@@ -93,6 +95,14 @@ podTemplate(
         echo "Building OpenShift container image tasks:${devTag}"
 
         // TBD: Build Image, tag Image
+        script {
+            openshift.withCluster() {
+                 openshift.withProject("${devProject}") {
+                      openshift.selector("bc", "tasks").startBuild("--from-file=./target/openshift-tasks.war", "--wait=true")
+                      openshift.tag("tasks:latest", "tasks:${devTag}")
+                 }
+            }
+         }
       }
 
       // Deploy the built image to the Development Environment.
@@ -102,6 +112,36 @@ podTemplate(
         // TBD: Deploy to development Project
         //      Set Image, Set VERSION
         //      Make sure the application is running and ready before proceeding
+
+        script {
+          openshift.withCluster() {
+            openshift.withProject("${devProject}") {
+              openshift.set("image", "dc/tasks", "tasks=docker-registry.default.svc:5000/${devProject}/tasks:${devTag}")
+              openshift.set("env", "dc/tasks", "--overwrite VERSION='${devTag} (tasks-dev)'")
+
+              // Update the Config Map which contains the users for the Tasks application
+              // (just in case the properties files changed in the latest commit)
+              openshift.selector('configmap', 'tasks-config').delete()
+              def configmap = openshift.create('configmap', 'tasks-config', '--from-file=./configuration/application-users.properties', '--from-file=./configuration/application-roles.properties' )
+
+              // Deploy the development application.
+              openshift.selector("dc", "tasks").rollout().latest();
+
+
+              def dc = openshift.selector("dc", "tasks").object()
+              def dc_version = dc.status.latestVersion
+              def rc = openshift.selector("rc", "tasks-${dc_version}").object()
+
+              echo "Waiting for ReplicationController tasks-${dc_version} to be ready"
+              while (rc.spec.replicas != rc.status.readyReplicas) {
+                sleep 5
+                rc = openshift.selector("rc", "tasks-${dc_version}").object()
+                echo "Current status of the replicas ${rc.status.readyReplicas} out of ${rc.spec.replicas}"
+              }
+            }
+          }
+        }
+
       }
 
       // Copy Image to Nexus container registry
